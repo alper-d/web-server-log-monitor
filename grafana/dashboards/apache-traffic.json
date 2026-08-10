@@ -1,0 +1,655 @@
+{
+  "uid": "apache-traffic",
+  "title": "Apache Traffic",
+  "description": "Incoming web traffic from Apache access/error logs. Filter with the controls at the top; the IP, path and user-agent boxes accept regular expressions.",
+  "tags": ["apache", "logs", "traffic"],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "refresh": "30s",
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {
+    "refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "1h"]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "host",
+        "label": "Host",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "apache-loki" },
+        "query": {
+          "label": "host",
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "stream": "{job=\"apache\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "multi": false,
+        "includeAll": false,
+        "current": {},
+        "sort": 1
+      },
+      {
+        "name": "vhost",
+        "label": "Vhost",
+        "description": "Virtual host the request was served for. Taken from %v where Apache logs it (other_vhosts_access.log), otherwise from the log file name.",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "apache-loki" },
+        "query": {
+          "label": "vhost",
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "stream": "{job=\"apache\", log_type=\"access\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      },
+      {
+        "name": "method",
+        "label": "Method",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "apache-loki" },
+        "query": {
+          "label": "method",
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "stream": "{job=\"apache\", log_type=\"access\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      },
+      {
+        "name": "status",
+        "label": "Status",
+        "type": "query",
+        "datasource": { "type": "loki", "uid": "apache-loki" },
+        "query": {
+          "label": "status",
+          "refId": "LokiVariableQueryEditor-VariableQuery",
+          "stream": "{job=\"apache\", log_type=\"access\"}",
+          "type": 1
+        },
+        "refresh": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": { "text": ["All"], "value": ["$__all"] },
+        "sort": 1
+      },
+      {
+        "name": "ip",
+        "label": "Client IP (regex)",
+        "type": "textbox",
+        "query": ".*",
+        "current": { "text": ".*", "value": ".*" },
+        "options": []
+      },
+      {
+        "name": "path",
+        "label": "Path (regex)",
+        "type": "textbox",
+        "query": ".*",
+        "current": { "text": ".*", "value": ".*" },
+        "options": []
+      },
+      {
+        "name": "ua",
+        "label": "User agent (regex)",
+        "type": "textbox",
+        "query": ".*",
+        "current": { "text": ".*", "value": ".*" },
+        "options": []
+      }
+    ]
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Total requests",
+      "description": "Requests matching the current filters over the selected time range.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "blue" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "expr": "sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Unique client IPs",
+      "description": "Distinct source addresses seen in the selected range, after filtering.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "purple" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "expr": "count(sum by (remote_addr) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range]))) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Error rate",
+      "description": "Share of filtered requests answered with a 4xx or 5xx status.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "decimals": 1,
+          "min": 0,
+          "max": 100,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "yellow", "value": 5 },
+              { "color": "orange", "value": 20 },
+              { "color": "red", "value": 50 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "expr": "100 * (sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\", status=~\"[45]..\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])) or vector(0)) / sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range]))"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Bytes sent",
+      "description": "Sum of Apache's %O (bytes sent including headers) over the range.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 12, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "decimals": 1,
+          "color": { "mode": "fixed", "fixedColor": "text" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "none",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "expr": "sum(sum_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" | bytes =~ \"[0-9]+\" | unwrap bytes [$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "4xx",
+      "description": "Client errors (not found, forbidden, bad request, ...).",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 16, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "fixed", "fixedColor": "orange" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "expr": "sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\", status=~\"4..\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "5xx",
+      "description": "Server errors. Anything non-zero here is worth investigating in the error log panel below.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 4, "w": 4, "x": 20, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 1 }
+            ]
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "colorMode": "value",
+        "graphMode": "none",
+        "textMode": "auto",
+        "justifyMode": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "expr": "sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\", status=~\"5..\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])) or vector(0)"
+        }
+      ]
+    },
+    {
+      "id": 7,
+      "type": "timeseries",
+      "title": "Requests over time",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 4 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 60,
+            "lineWidth": 1,
+            "barAlignment": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "legendFormat": "requests",
+          "expr": "sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__auto]))"
+        }
+      ]
+    },
+    {
+      "id": 8,
+      "type": "piechart",
+      "title": "HTTP methods",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "mappings": [] },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "pieType": "donut",
+        "displayLabels": ["percent"],
+        "legend": { "displayMode": "list", "placement": "right", "showLegend": true }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{method}}",
+          "expr": "sum by (method) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range]))"
+        }
+      ]
+    },
+    {
+      "id": 9,
+      "type": "timeseries",
+      "title": "Status codes over time",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "bars",
+            "fillOpacity": 80,
+            "lineWidth": 0,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisSoftMin": 0,
+            "stacking": { "mode": "normal", "group": "A" }
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "legendFormat": "{{status}}",
+          "expr": "sum by (status) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__auto]))"
+        }
+      ]
+    },
+    {
+      "id": 10,
+      "type": "timeseries",
+      "title": "Bytes sent over time",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 25,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "axisSoftMin": 0
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "legendFormat": "bytes",
+          "expr": "sum(sum_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" | bytes =~ \"[0-9]+\" | unwrap bytes [$__auto]))"
+        }
+      ]
+    },
+    {
+      "id": 11,
+      "type": "bargauge",
+      "title": "Top 10 client IPs",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "decimals": 0,
+          "color": { "mode": "continuous-BlPu" },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "valueMode": "text",
+        "showUnfilled": true,
+        "sizing": "auto"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{remote_addr}}",
+          "expr": "topk(10, sum by (remote_addr) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])))"
+        }
+      ]
+    },
+    {
+      "id": 12,
+      "type": "table",
+      "title": "Top 10 paths",
+      "description": "Query strings are stripped (path_base) to keep the grouping readable.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0, "mappings": [] },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Requests", "desc": true }],
+        "footer": { "show": false, "reducer": ["sum"], "fields": "" }
+      },
+      "transformations": [
+        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": { "Field": "Path", "Last *": "Requests" },
+            "excludeByName": {}
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{path_base}}",
+          "expr": "topk(10, sum by (path_base) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])))"
+        }
+      ]
+    },
+    {
+      "id": 13,
+      "type": "table",
+      "title": "Top 10 user agents",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 20 },
+      "fieldConfig": {
+        "defaults": { "unit": "short", "decimals": 0, "mappings": [] },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "sortBy": [{ "displayName": "Requests", "desc": true }],
+        "footer": { "show": false, "reducer": ["sum"], "fields": "" }
+      },
+      "transformations": [
+        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } },
+        {
+          "id": "organize",
+          "options": {
+            "renameByName": { "Field": "User agent", "Last *": "Requests" },
+            "excludeByName": {}
+          }
+        }
+      ],
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "instant",
+          "instant": true,
+          "range": false,
+          "legendFormat": "{{user_agent}}",
+          "expr": "topk(10, sum by (user_agent) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])))"
+        }
+      ]
+    },
+    {
+      "id": 14,
+      "type": "logs",
+      "title": "Requests",
+      "description": "Raw access log lines matching the filters. Expand a line to see the parsed fields (client IP, path, user agent, bytes) as structured metadata.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 29 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "showTime": true,
+        "showLabels": false,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "maxLines": 1000,
+          "expr": "{job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\""
+        }
+      ]
+    },
+    {
+      "id": 15,
+      "type": "logs",
+      "title": "Apache error log",
+      "description": "Not affected by the access-log filters above, apart from Host and the time range.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 41 },
+      "fieldConfig": { "defaults": {}, "overrides": [] },
+      "options": {
+        "showTime": true,
+        "showLabels": true,
+        "showCommonLabels": false,
+        "wrapLogMessage": true,
+        "prettifyLogMessage": false,
+        "enableLogDetails": true,
+        "dedupStrategy": "none",
+        "sortOrder": "Descending"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "maxLines": 500,
+          "expr": "{job=\"apache\", log_type=\"error\", host=\"$host\", vhost=~\"${vhost:regex}\"}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+# Contains the Grafana admin password -- never commit. Generate per-deployment
+# with ./scripts/setup.sh; .env.example documents every setting.
+.env
+.env.example
+# The server's log archives, copied here for scripts/import_logs.py to read.
+# The WHOLE directory is ignored, not just *.log: logrotate leaves .gz archives
+# and strays like logs-md5.txt, and those carry the same sensitive content --
+# client IPs, session cookies, requested URLs. Gigabytes of it.
+/backfill/
+
+# Output of a backfill run. Echoes log lines and file names, so treat it as
+# sensitive too.
+/import.log
+
+# Python virtualenv for scripts/import_logs.py. Recreate with
+# ./scripts/setup.sh (or: python3 -m venv .venv).
+/.venv/
+__pycache__/
+*.pyc
+/alloy/
+README.md

@@ -1,0 +1,146 @@
+auth_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: info
+
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+ingester:
+  # Durability tuning for a LOW-TRAFFIC host. With Loki's defaults
+  # (chunk_idle_period 30m, max_chunk_age 2h, wal.flush_on_shutdown false) a
+  # stream with a handful of lines sits in an in-memory head chunk for up to
+  # half an hour. A restart or reboot then loses it: WAL replay came back with
+  # "no checkpoint found" and recovered nothing in testing, so recent requests
+  # simply vanished while the older backfill (already aged out and flushed)
+  # survived. These settings trade storage efficiency -- irrelevant at this
+  # volume -- for not losing traffic data.
+  chunk_idle_period: 2m
+  # 2h rather than 1h: a little more tolerance for entries arriving behind a
+  # stream's high-water mark during a bulk import, which is what
+  # scripts/import_logs.py reports as "Dropped by Loki ... outside its
+  # out-of-order window". Do NOT raise this much further on a memory-capped
+  # deployment -- it directly controls how long chunks stay resident, and 12h
+  # was enough to get the ingester OOM-killed inside a 512m cgroup.
+  max_chunk_age: 2h
+  chunk_retain_period: 30s
+
+  # Memory, not storage efficiency, is the binding constraint here. Open chunks
+  # are held per stream, so the ingester's footprint is roughly
+  # (active streams x chunk_target_size). At ~1000 streams -- 6 vhosts times the
+  # methods and statuses they see -- the 1.5MB default alone exceeds a 512m
+  # budget before anything else is counted. 512KB keeps that term near 500MB and
+  # costs only slightly worse compression.
+  chunk_target_size: 524288
+  chunk_block_size: 262144
+
+  # Drain flushed chunks out of memory faster, so a bulk import doesn't build a
+  # backlog of chunks waiting to be written.
+  concurrent_flushes: 16
+  flush_check_period: 15s
+  wal:
+    enabled: true
+    dir: /loki/wal
+    # Write in-memory chunks to the store on a graceful shutdown. Paired with
+    # stop_grace_period on the loki service in docker-compose.yml.
+    flush_on_shutdown: true
+
+schema_config:
+  configs:
+    # `from` MUST predate the oldest timestamp we ingest, and getting this wrong
+    # fails silently: Loki answers the push with HTTP 204 and stores the entry,
+    # but no index period covers it, so queries return nothing forever.
+    #
+    # The oldest archive here is access.log.10.gz at 2023-11-29 -- the whole
+    # `default` vhost family is from Nov/Dec 2023, while every other vhost starts
+    # Jul 2025 or later. At the previous value of 2024-01-01 those 611 entries
+    # imported "successfully" and were unqueryable. Lower this, never raise it,
+    # and re-import anything that was already pushed below the old boundary.
+    - from: 2023-01-01
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+storage_config:
+  tsdb_shipper:
+    active_index_directory: /loki/tsdb-index
+    cache_location: /loki/tsdb-cache
+  filesystem:
+    directory: /loki/chunks
+
+limits_config:
+  # CRITICAL for the backfill: Loki otherwise rejects anything older than
+  # reject_old_samples_max_age (default 1 week) and would silently discard
+  # nearly all of the archived history.
+  reject_old_samples: false
+
+  # Lets high-cardinality fields (client IP, path, user-agent) be attached
+  # per-line and filtered in LogQL without exploding the stream count.
+  allow_structured_metadata: true
+
+  # Accept backfilled lines that arrive out of order relative to live tailing.
+  unordered_writes: true
+
+  # No ceiling on how far back queries may look (0 = unlimited), so the
+  # 2024/2025 entries stay reachable from the dashboard time picker.
+  max_query_lookback: 0s
+
+  # Loki caps a single query's time span at 721h (~30d) by default, which makes
+  # any dashboard range wider than a month fail with HTTP 400. 0 = no limit,
+  # needed to view the backfilled history in one shot.
+  max_query_length: 0s
+
+  # Enables the "Volume" / log-volume features in Grafana's Loki explorer.
+  volume_enabled: true
+
+  # Sized for the historical import, not for steady-state traffic: the archives
+  # are ~19 GB of access logs across ~58M lines. The defaults (4 MB/s global,
+  # 3 MB/s per stream) turn that into a multi-day crawl -- the importer backs off
+  # and retries on 429 rather than losing data, so the symptom is slowness, not
+  # loss. Lower these once the backfill is in if this host ever faces real
+  # traffic and you want the rate limit to act as a brake again.
+  ingestion_rate_mb: 32
+  # Burst is a memory cost in the distributor, so it stays modest on a
+  # memory-capped host. 32MB is still 8x the stock burst.
+  ingestion_burst_size_mb: 32
+
+  # The global limit above is not the binding one during an import. Traffic is
+  # heavily skewed -- one vhost's GET/200 stream carries a large share of all
+  # 58M lines -- so the PER-STREAM ceiling is what gets hit first.
+  per_stream_rate_limit: 32MB
+  per_stream_rate_limit_burst: 64MB
+
+  max_streams_per_user: 5000
+  max_label_names_per_series: 20
+
+compactor:
+  working_directory: /loki/compactor
+  delete_request_store: filesystem
+  # Keep everything forever. Enabling retention here would let the compactor
+  # delete the backfilled 2024/2025 history. Total volume is negligible.
+  # To start expiring data later, set retention_enabled: true and add
+  # limits_config.retention_period (e.g. 2160h for 90 days).
+  retention_enabled: false
+
+ruler:
+  storage:
+    type: local
+    local:
+      directory: /loki/rules
+
+analytics:
+  reporting_enabled: false

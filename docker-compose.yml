@@ -1,0 +1,83 @@
+name: apache-monitoring
+
+services:
+  loki:
+    image: grafana/loki:3.5
+    container_name: apachemon-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/config.yml
+    # Give the ingester time to flush in-memory chunks to disk on shutdown
+    # (see ingester.wal.flush_on_shutdown in loki/config.yml). The 10s Docker
+    # default can cut the flush short and lose recent logs.
+    stop_grace_period: 60s
+    ports:
+      - "127.0.0.1:3100:3100"
+    volumes:
+      - ./loki/config.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    # Sized in .env. This is a hard cgroup ceiling: exceed it and the kernel
+    # kills the ingester outright (exit 0, OOMKilled=false on the container, so
+    # it looks like a clean restart loop rather than the OOM it is -- check
+    # `journalctl -k | grep oom-kill`). The ingester needs roughly
+    # (active streams x chunk_target_size) plus overhead; see loki/config.yml.
+    mem_limit: ${LOKI_MEM:-1g}
+    networks: [apachemon]
+
+  alloy:
+    image: grafana/alloy:v1.12.0
+    container_name: apachemon-alloy
+    restart: unless-stopped
+    # Pinned so constants.hostname (the `host` label) stays stable across recreates.
+    # Without this, Docker uses the container ID and every `up` would start a new stream.
+    hostname: ${APACHE_HOST}
+    # root is required to read /var/log/apache2/*.log (mode 640, owner root:adm)
+    user: root
+    command:
+      - run
+      - /etc/alloy/config.alloy
+      - --storage.path=/var/lib/alloy/data
+      - --server.http.listen-addr=0.0.0.0:12345
+    ports:
+      # Alloy's own UI: component graph + live debugging of parse stages
+      - "127.0.0.1:12345:12345"
+    volumes:
+      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro
+      - ~/Downloads/apache2:/var/log/apache2:ro
+      # ./backfill is NOT mounted: it holds the server's rotated archives, which
+      # scripts/import_logs.py reads on the host and pushes to Loki directly.
+      # Alloy tails live files only -- see the note at the top of config.alloy.
+      - alloy-data:/var/lib/alloy/data
+    depends_on: [loki]
+    mem_limit: ${ALLOY_MEM:-256m}
+    networks: [apachemon]
+
+  grafana:
+    image: grafana/grafana:12.1
+    container_name: apachemon-grafana
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_ADMIN_PASSWORD}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Open the Apache dashboard straight from the home page
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/apache-traffic.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on: [loki]
+    mem_limit: ${GRAFANA_MEM:-384m}
+    networks: [apachemon]
+
+volumes:
+  loki-data:
+  alloy-data:
+  grafana-data:
+
+networks:
+  apachemon:
+    driver: bridge

@@ -1,0 +1,7 @@
+# scripts/import_logs.py deliberately uses only the Python standard library
+# (argparse, gzip, json, re, urllib, zoneinfo), so there is nothing to install.
+#
+# This file exists so that `pip install -r requirements.txt` is a valid step in
+# any deployment routine, and so future dependencies have an obvious home.
+#
+# Requires Python 3.9 or newer (zoneinfo).
