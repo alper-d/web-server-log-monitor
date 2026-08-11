@@ -165,6 +165,18 @@ limits_config:
   shard_aggregations:
     - approx_topk
 
+frontend:
+  # Required by limits_config.shard_aggregations above, and the whole reason this
+  # section exists. approx_topk is sharded into Count-Min Sketches, and a sketch
+  # is a binary structure that has to travel from each querier back to the query
+  # frontend. The default 'json' codec cannot carry one: the sharded plan is
+  # serialised as a LogQL string instead, the internal sketch expression is not
+  # valid LogQL input, and the querier rejects its own query with
+  # "parse error at line 1, col 1: syntax error: unexpected IDENTIFIER".
+  # Nothing in that message points at the codec, and enabling shard_aggregations
+  # without this looks like a broken dashboard query.
+  encoding: protobuf
+
 compactor:
   working_directory: /loki/compactor
   delete_request_store: filesystem
