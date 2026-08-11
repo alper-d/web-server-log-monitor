@@ -140,10 +140,30 @@ limits_config:
   # reduced, so raising this eats into the same LOKI_MEM budget as the ingester's
   # open chunks. Measure before raising it further (instant query, whole span):
   #   count(sum by (remote_addr) (count_over_time({job="apache", log_type="access"}[52w])))
-  # If a panel still hits the limit at a value this host cannot afford, switch
-  # that panel to approx_topk() and add shard_aggregations: [probabilistic_topk]
-  # -- it sketches instead of materialising, so its memory is bounded.
+  # If a panel still hits the limit at a value this host cannot afford, use the
+  # approx_topk() variant of the dashboard (see shard_aggregations below) -- it
+  # sketches instead of materialising, so its memory is bounded.
   max_query_series: 100000
+
+  # Enables approx_topk(), which the "Apache Traffic (approx)" dashboard uses in
+  # place of topk() for its three Top 10 panels. Instead of materialising one
+  # series per distinct value and sorting, each shard builds a Count-Min Sketch
+  # and only the sketches are merged, so memory is bounded by the sketch size
+  # rather than by cardinality -- and max_query_series stops being the ceiling on
+  # how wide a range those panels can cover. Necessary here because a 5-minute
+  # window alone holds ~19k distinct client IPs (21k requests, nearly one IP per
+  # request), so any range of a day or more runs to millions of series.
+  #
+  # The token is `approx_topk`; the -querier.shard-aggregations help text lists
+  # only the quantile/first/last aggregations and is out of date. Without this,
+  # the query fails outright with "approx_topk is not enabled", and it is
+  # supported for INSTANT queries only -- all three panels are instant.
+  #
+  # Counts are approximate by construction: the 10 rows and their values can be
+  # slightly off for values with near-identical traffic. That is the trade for
+  # unbounded-cardinality grouping.
+  shard_aggregations:
+    - approx_topk
 
 compactor:
   working_directory: /loki/compactor
