@@ -482,26 +482,26 @@
     },
     {
       "id": 11,
-      "type": "bargauge",
+      "type": "piechart",
       "title": "Top 10 client IPs",
+      "description": "Slices are the top 10 IPs only, so they do not sum to total traffic -- percentages are shares of these 10, not of all requests.",
       "datasource": { "type": "loki", "uid": "apache-loki" },
       "gridPos": { "h": 9, "w": 8, "x": 0, "y": 20 },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
           "decimals": 0,
-          "color": { "mode": "continuous-BlPu" },
+          "color": { "mode": "palette-classic" },
           "mappings": []
         },
         "overrides": []
       },
       "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "valueMode": "text",
-        "showUnfilled": true,
-        "sizing": "auto"
+        "reduceOptions": { "calcs": [], "fields": "", "values": true },
+        "pieType": "pie",
+        "displayLabels": ["percent"],
+        "legend": { "displayMode": "list", "placement": "right", "showLegend": true },
+        "tooltip": { "mode": "single", "sort": "none" }
       },
       "targets": [
         {

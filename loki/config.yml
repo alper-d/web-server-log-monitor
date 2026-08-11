@@ -127,6 +127,24 @@ limits_config:
   max_streams_per_user: 5000
   max_label_names_per_series: 20
 
+  # The dashboard's three "Top 10" panels are topk(10, sum by (<high-cardinality
+  # field>) (...)), and query sharding pushes that inner aggregation down to each
+  # shard -- so a shard emits one series per distinct client IP / path / user
+  # agent and the 500 default rejects the query with "maximum of series (500)
+  # reached for a single query" before topk ever trims it to 10. The ceiling must
+  # therefore exceed the DISTINCT VALUE COUNT in the widest range viewed, not the
+  # 10 rows displayed. Same for the "Unique client IPs" stat, which is
+  # count(sum by (remote_addr) (...)).
+  #
+  # This is a querier memory cost: the merged vector is held in full before it is
+  # reduced, so raising this eats into the same LOKI_MEM budget as the ingester's
+  # open chunks. Measure before raising it further (instant query, whole span):
+  #   count(sum by (remote_addr) (count_over_time({job="apache", log_type="access"}[52w])))
+  # If a panel still hits the limit at a value this host cannot afford, switch
+  # that panel to approx_topk() and add shard_aggregations: [probabilistic_topk]
+  # -- it sketches instead of materialising, so its memory is bounded.
+  max_query_series: 100000
+
 compactor:
   working_directory: /loki/compactor
   delete_request_store: filesystem
