@@ -65,6 +65,29 @@ services:
       GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
       # Open the Apache dashboard straight from the home page
       GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/apache-traffic.json
+
+      # Alerting. GF_SERVER_ROOT_URL was documented in .env.example and written
+      # by setup.sh but never reached the container -- harmless until now, but
+      # the "View alert"/"Silence" links in an alert email are built from it, so
+      # without this every notification links to localhost:3000.
+      GF_SERVER_ROOT_URL: ${GF_SERVER_ROOT_URL:-http://localhost:3000/}
+      # Read by grafana/provisioning/alerting/contact-points.yaml, which
+      # interpolates it from this container's environment.
+      #
+      # The fallback is NOT cosmetic. Grafana validates provisioned contact
+      # points at startup and an empty `addresses` is a HARD FAILURE: the
+      # provisioning service refuses to start and the whole container
+      # restart-loops with "could not find addresses in settings". An
+      # unconfigured mailbox must not be able to take the stack down, so this
+      # resolves to a non-routable placeholder when ALERT_EMAIL_TO is unset.
+      ALERT_EMAIL_TO: ${ALERT_EMAIL_TO:-alerts@localhost}
+      GF_SMTP_ENABLED: ${SMTP_ENABLED:-true}
+      GF_SMTP_HOST: ${SMTP_HOST:-}
+      GF_SMTP_USER: ${SMTP_USER:-}
+      GF_SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      GF_SMTP_FROM_ADDRESS: ${SMTP_FROM_ADDRESS:-}
+      GF_SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Apache Monitor}
+      GF_SMTP_STARTTLS_POLICY: ${SMTP_STARTTLS_POLICY:-OpportunisticStartTLS}
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

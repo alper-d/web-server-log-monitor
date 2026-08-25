@@ -115,6 +115,30 @@ else
   say "admin password" "generated"
 fi
 
+# --- alerting settings ----------------------------------------------------
+# Carried over verbatim from an existing .env, never generated. These are
+# site-specific (a mail relay this script cannot discover), and regenerating
+# with --force must not silently wipe working alert delivery -- a stack that
+# stops emailing looks exactly like a stack with nothing to report.
+carry_over() {
+  local key="$1" val=""
+  if [[ -f "$ENV_FILE" ]]; then
+    val="$(grep -E "^$key=" "$ENV_FILE" | head -1 | cut -d= -f2- || true)"
+  fi
+  printf '%s' "$val"
+}
+ALERT_EMAIL_TO="$(carry_over ALERT_EMAIL_TO)"
+SMTP_HOST="$(carry_over SMTP_HOST)"
+SMTP_USER="$(carry_over SMTP_USER)"
+SMTP_PASSWORD="$(carry_over SMTP_PASSWORD)"
+SMTP_FROM_ADDRESS="$(carry_over SMTP_FROM_ADDRESS)"
+SMTP_FROM_NAME="$(carry_over SMTP_FROM_NAME)"
+if [[ -n "$SMTP_HOST" ]]; then
+  say "alerting" "SMTP settings carried over from existing .env"
+else
+  say "alerting" "not configured (set SMTP_* and ALERT_EMAIL_TO in .env to enable email)"
+fi
+
 # --- write ----------------------------------------------------------------
 # Ports are written as literals: Docker Compose interpolates ${VAR} inside the
 # compose file, not inside .env, so .env must not reference its own variables.
@@ -150,6 +174,16 @@ ALLOY_MEM=256m
 LOKI_VERSION=3.5
 ALLOY_VERSION=v1.12.0
 GRAFANA_VERSION=12.1
+
+# Alerting. Empty SMTP_HOST means Grafana evaluates the alert rules in
+# grafana/provisioning/alerting/ but cannot email anyone -- alerts are still
+# visible under Alerting -> Active notifications in the UI.
+ALERT_EMAIL_TO=$ALERT_EMAIL_TO
+SMTP_HOST=$SMTP_HOST
+SMTP_USER=$SMTP_USER
+SMTP_PASSWORD=$SMTP_PASSWORD
+SMTP_FROM_ADDRESS=$SMTP_FROM_ADDRESS
+SMTP_FROM_NAME=$SMTP_FROM_NAME
 EOF
 chmod 600 "$ENV_FILE"
 

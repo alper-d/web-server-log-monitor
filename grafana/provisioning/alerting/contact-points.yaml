@@ -1,0 +1,42 @@
+# Grafana-managed contact point and notification routing.
+#
+# Provisioned files are authoritative: what is here is recreated on every
+# Grafana start and is READ-ONLY in the UI. Edit this file and
+# `docker compose restart grafana` -- changes made in the browser are discarded.
+#
+# Deleting this file does NOT delete what it created. Grafana keeps provisioned
+# objects until it is told to remove them, which needs a `deleteContactPoints:`
+# stanza (uid + orgId) left in place for one restart.
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: apache-email
+    receivers:
+      - uid: apache-email
+        type: email
+        settings:
+          # Interpolated from the Grafana container's environment, which
+          # docker-compose.yml feeds from ALERT_EMAIL_TO in .env. Comma-separate
+          # for several recipients. If this ever shows up in the UI as the
+          # literal string "${ALERT_EMAIL_TO}", the variable did not reach the
+          # container -- check the `environment:` block of the grafana service.
+          addresses: ${ALERT_EMAIL_TO}
+          # One email per alert rather than one digest per group, so the subject
+          # line names the vhost that is actually broken.
+          singleEmail: false
+
+# WARNING: this REPLACES the entire root notification policy tree, it does not
+# merge into it. Every alert in the org routes through this one policy.
+policies:
+  - orgId: 1
+    receiver: apache-email
+    # Group per rule per vhost: one noisy vhost cannot suppress a second vhost
+    # failing under the same rule.
+    group_by: [alertname, vhost]
+    group_wait: 30s
+    group_interval: 5m
+    # A still-firing alert re-notifies twice a day. Lower this and a sustained
+    # outage buries the inbox; raise it and a resolved-then-refiring alert is
+    # easy to miss.
+    repeat_interval: 12h
