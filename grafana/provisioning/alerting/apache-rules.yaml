@@ -18,17 +18,19 @@ groups:
 
       # ---------------------------------------------------------------------
       # Scanner surge: the share of traffic being blocked or not-found, judged
-      # against the SAME CLOCK TIME ONE WEEK AGO rather than a fixed percentage.
+      # against a SEASONAL BASELINE built from the same clock time on each of the
+      # previous FOUR weeks (offset 7d/14d/21d/28d) rather than against a fixed
+      # percentage.
       #
       # SCOPED TO ONE VHOST ON PURPOSE: every selector below carries
-      # vhost="fairdomhub". To widen it, delete those five matchers -- but
+      # vhost="fairdomhub". To widen it, delete those matchers -- but
       # re-calibrate first. The +15pp threshold was measured against
       # fairdomhub's traffic profile alone, and a vhost with a different
       # baseline shape needs its own number. Note the volume guard alone used to
       # do this filtering as a side effect, which meant a quiet vhost growing
       # past 1000 requests/30m would have started paging silently.
       #
-      # Why the week-over-week baseline is the whole design:
+      # Why a week-over-week baseline at all:
       #
       #   A fixed threshold cannot work on this data. Total traffic swings 3x
       #   across the day (34k-103k requests/hour) and the 40x share independently
@@ -37,20 +39,46 @@ groups:
       #   night while scanners keep going at a constant rate. Any fixed cutoff
       #   either pages every night or misses daytime campaigns.
       #
-      #   `offset 7d` lands on the same weekday at the same clock time, so the
-      #   diurnal AND the weekday/weekend shape both cancel. It also needs no
-      #   timezone handling at all, which matters because APACHE_TZ describes the
-      #   host that WROTE the logs, not the reader.
+      #   Whole-week offsets land on the same weekday at the same clock time, so
+      #   the diurnal AND the weekday/weekend shape both cancel. They also need
+      #   no timezone handling at all, which matters because APACHE_TZ describes
+      #   the host that WROTE the logs, not the reader.
       #
-      # Measured separation (30m window, percentage-point delta):
+      # Why FOUR weeks and not one: with a single 7d offset the baseline poisons
+      # itself. A campaign running longer than a week becomes its own baseline,
+      # the delta collapses, and the alert resolves while the scanning continues.
+      # Four weeks degrade that a quarter at a time, so the alert keeps firing
+      # for roughly a month instead of seven days. Four samples also halve the
+      # baseline's own noise.
+      #
+      # Why POOLED COUNTS and not the mean of four percentages: the four weeks
+      # are summed numerator-and-denominator, so the baseline is weighted by
+      # traffic volume. A 30m window in which fairdomhub was half-down then
+      # contributes proportionally little instead of casting a full 1/4 vote --
+      # 5 requests, 3 of them 404, would otherwise enter the baseline as 60%.
+      #
+      # Why the `or` fallbacks on 14d/21d/28d: `+` is an inner join, so ONE
+      # missing week would empty the whole expression and leave the rule at
+      # NoData -> OK, silently. Each older week therefore falls back to the 7d
+      # window when absent, which keeps the blind period after a fresh deploy or
+      # a `docker compose down -v` at SEVEN days rather than 28; weeks 2-4 simply
+      # run on a partial baseline. The 7d terms are deliberately NOT wrapped --
+      # if the 7d window itself is missing there is no baseline at all, and
+      # NoData -> OK is then the correct answer.
+      #
+      # Measured separation (30m window, percentage-point delta), against the
+      # ORIGINAL single-7d baseline:
       #   quiet weeks     median -0.2pp   p95  0.4pp   max  6.6pp
       #   active campaign median  4.2pp   p95 34.4pp   max 55.9pp
-      # The +15 threshold sits ~2.3x above the worst quiet-period reading.
+      # +15 sat ~2.3x above the worst quiet-period reading. A four-week baseline
+      # is smoother, so the quiet spread should narrow rather than widen -- but
+      # RE-MEASURE before tightening the threshold on the strength of that
+      # expectation. See CLAUDE.md for the sweep.
       #
       # Why 30m: quiet-period noise peaks at 12.2pp with a 15m window, 6.6pp at
       # 30m, 3.6pp at 1h. 30m is the fastest window that keeps real margin.
       #
-      # Why SUBTRACTION and not a ratio of ratios: the week-ago share is often
+      # Why SUBTRACTION and not a ratio of ratios: the baseline share is often
       # near zero (0.24% in one measured hour, against 28.8% live), and dividing
       # by it produces unstable near-infinite values. Percentage points stay
       # bounded and mean something to a human reading the alert.
@@ -60,13 +88,38 @@ groups:
       # are byte-identical to those on 200s (spoofed Chrome). Status code is the
       # only discriminator that actually works here.
       #
+      # Three properties of this design that are NOT bugs:
+      #   - A past campaign now casts a four-week shadow. A large scanner event
+      #     21 days ago inflates today's baseline and raises the bar, and pooled
+      #     counts give a high-volume campaign week MORE weight, not less. That
+      #     is the direct trade for slower self-poisoning. A median of the four
+      #     weeks would avoid it, but LogQL cannot express one --
+      #     quantile_over_time works over a range, not across offsets.
+      #   - A baseline week with literally zero 403/404 falls back to the 7d
+      #     value rather than contributing 0, because count_over_time yields no
+      #     series rather than a zero. That biases the baseline slightly UP, ie
+      #     toward missing an event, never toward a false page. Unlikely at
+      #     fairdomhub's 25000-42000 requests/30m.
+      #   - All four offsets are whole weeks, so weekday alignment always holds.
+      #     Across a DST transition the older windows sit an hour off local clock
+      #     time for a fortnight -- at most 2 of 4 weeks misaligned, where a
+      #     single 7d offset was all-or-nothing.
+      #
       # Cost: `status` and `vhost` are stream labels, so this is answered from
-      # the index -- measured at 0.11s against a 1m evaluation interval. Do not
-      # rewrite it to group by remote_addr/path/user_agent; see CLAUDE.md on
-      # max_query_series and the LOKI_MEM cliff.
+      # the index. Going from 5 count_over_time selectors to 17 costs ~6x --
+      # measured 0.09s (single-7d) -> 0.54s at a timestamp with data, and 0.07s
+      # per Grafana evaluation when the live window is empty. Against a 1m
+      # interval that is still ~1% duty cycle. Do not rewrite it to group by
+      # remote_addr/path/user_agent; see CLAUDE.md on max_query_series and the
+      # LOKI_MEM cliff.
+      #
+      # NOTE the same 6x makes a query_range SWEEP of this expression expensive
+      # in a way the rule itself is not: 3 weeks at 30m steps is ~1000 evaluation
+      # points x 17 selectors and it does not return. Sample it with repeated
+      # instant queries instead -- see Verification in CLAUDE.md.
       # ---------------------------------------------------------------------
       - uid: apache-scanner-surge
-        title: Scanner surge (40x share vs same time last week)
+        title: Scanner surge (40x share vs 4-week seasonal baseline)
         condition: C
         for: 15m
         noDataState: OK
@@ -78,16 +131,18 @@ groups:
         annotations:
           summary: >-
             {{ $labels.vhost }}: blocked/not-found responses are {{ $values.B }}
-            percentage points above the same time last week
+            percentage points above the 4-week baseline for this hour
           description: >-
             The 403/404 share of traffic is far above its own seasonal baseline
-            for this hour and weekday, which is what a scraping or scanning
-            campaign looks like once time-of-day variation is removed. Check the
-            Top 10 client IPs and Top 10 paths panels on the approx dashboard.
+            for this hour and weekday, averaged over the previous four weeks,
+            which is what a scraping or scanning campaign looks like once
+            time-of-day variation is removed. Check the Top 10 client IPs and
+            Top 10 paths panels on the approx dashboard.
             Scope: this rule watches the fairdomhub vhost only.
             NOTE: this alert resolving means "no longer unusual for this hour",
-            NOT "the scanning stopped" -- a campaign running longer than 7 days
-            becomes its own baseline.
+            NOT "the scanning stopped" -- a long campaign still works its way
+            into its own baseline, now a quarter at a time over four weeks
+            instead of all at once after seven days.
           __dashboardUid__: apache-traffic-approx
           __panelId__: '3'
         data:
@@ -101,18 +156,26 @@ groups:
               editorMode: code
               intervalMs: 60000
               maxDataPoints: 43200
-              # The trailing `and (... > 1000)` is a minimum-volume guard. With
-              # the vhost pinned it no longer separates vhosts, but it still
-              # covers the degenerate case that matters: if fairdomhub's OWN
-              # traffic collapses during a partial outage, a handful of 404s
-              # against a tiny denominator reads as a huge swing. fairdomhub
-              # normally runs ~25000-42000 requests/30m, so this only engages
-              # when something is already badly wrong.
+              # The trailing `and (... > 1000)` is a minimum-volume guard on the
+              # LIVE window only. With the vhost pinned it no longer separates
+              # vhosts, but it still covers the degenerate case that matters: if
+              # fairdomhub's OWN traffic collapses during a partial outage, a
+              # handful of 404s against a tiny denominator reads as a huge swing.
+              # fairdomhub normally runs ~25000-42000 requests/30m, so this only
+              # engages when something is already badly wrong. The baseline side
+              # needs no such guard -- pooling the four weeks' counts already
+              # weights a collapsed window down to near-nothing.
               expr: >-
                 100 * ((sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m]))
                 / sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m])))
-                - (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 7d))
-                / sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 7d))))
+                - ((sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 7d))
+                + (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 14d)) or sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 7d)))
+                + (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 21d)) or sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 7d)))
+                + (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 28d)) or sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub", status=~"40[34]"}[30m] offset 7d))))
+                / (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 7d))
+                + (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 14d)) or sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 7d)))
+                + (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 21d)) or sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 7d)))
+                + (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 28d)) or sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m] offset 7d))))))
                 and (sum by (vhost) (count_over_time({job="apache", log_type="access", vhost="fairdomhub"}[30m])) > 1000)
           - refId: B
             datasourceUid: __expr__

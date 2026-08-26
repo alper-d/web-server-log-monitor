@@ -121,13 +121,26 @@ point and the notification policy. Both are read-only in the UI; edit the file
 and restart.
 
 **There is exactly one rule, `apache-scanner-surge`, and it is deliberately
-seasonal.** It compares the 403/404 share of traffic against the same clock time
-**one week earlier** (`offset 7d`) and alerts when it exceeds that baseline by
-more than 15 percentage points.
+seasonal.** It compares the 403/404 share of traffic against a baseline built
+from the same clock time on each of the **previous four weeks** (`offset
+7d`/`14d`/`21d`/`28d`) and alerts when it exceeds that baseline by more than 15
+percentage points.
+
+The four weeks are **pooled, not averaged as percentages**: the numerators are
+summed and the denominators are summed, then divided once. That weights the
+baseline by traffic volume, so a 30m window in which fairdomhub was half-down
+contributes proportionally little instead of casting a full 1/4 vote -- 5
+requests, 3 of them 404, would otherwise enter the baseline as 60%.
+
+The `14d`/`21d`/`28d` terms each **fall back to the `7d` term via `or`** when
+that week has no data. `+` is an inner join, so without the fallback one missing
+week would empty the whole expression and leave the rule at NoData -> `OK`,
+silently. The `7d` terms are deliberately not wrapped: if that window is missing
+there is no baseline at all, and NoData is then the right answer.
 
 It is **scoped to `vhost="fairdomhub"`** -- every selector in the expression
-carries that matcher. Widening it means deleting those five matchers *and*
-re-calibrating: +15pp was measured against fairdomhub's traffic profile alone,
+carries that matcher -- 17 of them now. Widening it means deleting every one
+*and* re-calibrating: +15pp was measured against fairdomhub's profile alone,
 and a vhost with a different baseline shape needs its own threshold. Before the
 matchers existed the `> 1000 requests / 30m` volume guard did this filtering as a
 side effect, which meant any quiet vhost growing past that line would silently
@@ -136,17 +149,30 @@ start paging under a rule not calibrated for it.
 A fixed-percentage threshold was measured and rejected: total traffic swings 3x
 across the day (34k-103k requests/hour) and the 40x share independently swings
 3.5%-31% by hour, so the single largest 40x spike in a sample day -- 73% -- fell
-at 02:40, caused only by legitimate traffic draining away at night. `offset 7d`
-lands on the same weekday at the same clock time, cancelling both the diurnal and
-the weekday/weekend shape, and needs no timezone handling -- which matters,
-because `APACHE_TZ` describes the host that WROTE the logs, not the reader.
+at 02:40, caused only by legitimate traffic draining away at night. Whole-week
+offsets land on the same weekday at the same clock time, cancelling both the
+diurnal and the weekday/weekend shape, and need no timezone handling -- which
+matters, because `APACHE_TZ` describes the host that WROTE the logs, not the
+reader. Reading 28 days back costs nothing extra in Loki: `retention_enabled` is
+false and both `max_query_lookback` and `max_query_length` are `0s`.
 
-Measured separation over 30m windows, in percentage points:
+Measured separation over 30m windows, in percentage points. **These figures were
+measured against the original single-`7d` baseline**, which is what set +15pp:
 
 | period | median | p95 | max |
 |---|---|---|---|
 | quiet weeks | -0.2pp | 0.4pp | 6.6pp |
 | active campaign | 4.2pp | 34.4pp | 55.9pp |
+
+Four pooled weeks are a smoother baseline than one, so the quiet-period spread
+should narrow rather than widen. **That has not been confirmed on this
+deployment and +15pp is therefore unchanged.** `fairdomhub` history here spans
+2026-07-09 to 2026-08-06 -- exactly 28 days -- so only the very last instant has
+a complete four-week baseline and every earlier one runs on the `7d` fallback.
+Sampled 3-hourly across 2026-07-16..08-06, the four-week and single-`7d`
+expressions are within 0.2pp of each other for that reason. Re-calibrating needs
+a deployment carrying 8+ weeks of history; the sweep recipe is under
+Verification.
 
 Three findings that constrain any future edit to this rule:
 
@@ -155,19 +181,26 @@ Three findings that constrain any future edit to this rule:
 - **User agent is not a discriminator either.** The top UA strings on 403
   responses are byte-identical to those on 200s (spoofed `Chrome/142-145`), so
   UA-pattern matching catches none of this traffic.
-- **Subtract the baseline, do not divide by it.** The week-ago share is often
+- **Subtract the baseline, do not divide by it.** The baseline share is often
   near zero (0.24% against 28.8% live in one measured hour), and a ratio of
   ratios goes to infinity there. Percentage points stay bounded and legible.
 
-Two caveats that are properties of the seasonal design, not bugs:
+Three caveats that are properties of the seasonal design, not bugs:
 
-- **The baseline poisons itself after 7 days.** A campaign lasting longer than a
-  week becomes its own baseline and the alert resolves while the scanning
-  continues. Resolved means "no longer unusual for this hour", not "stopped". If
-  that bites, average a 7d and a 14d baseline rather than lengthening the offset.
-- **The first week of a deployment cannot alert.** With no data 7 days back the
-  offset term returns no series, so the rule sits at NoData -> `OK`. Same after
-  `docker compose down -v`.
+- **The baseline still poisons itself, but a quarter at a time.** A long campaign
+  works its way into its own baseline as each week rolls into the window, so the
+  delta decays over roughly four weeks instead of collapsing after seven days.
+  Resolved still means "no longer unusual for this hour", not "stopped".
+- **A past campaign casts a four-week shadow.** The other side of the same coin:
+  a large scanner event 21 days ago inflates today's baseline and raises the bar
+  for detection, and pooling gives a high-volume campaign week *more* weight, not
+  less. A median of the four weeks would avoid this, but LogQL cannot express one
+  -- `quantile_over_time` works over a range, not across offsets. Accepted, not
+  solved.
+- **The first week of a deployment still cannot alert -- but only the first.**
+  With no data 7 days back the `7d` terms return no series and the rule sits at
+  NoData -> `OK`. Weeks 2-4 do alert, on a partial baseline, because the older
+  terms fall back to `7d`. Same after `docker compose down -v`.
 
 **Removing a rule needs more than deleting it from the file.** Grafana keeps
 provisioned rules until told to drop them, via a `deleteRules:` stanza (orgId +
@@ -194,7 +227,10 @@ Two independent reasons:
   `sum by (remote_addr|path|user_agent)` are therefore banned in rules -- see the
   `max_query_series` and `LOKI_MEM` notes below. The shipped rule groups only by
   `vhost`, and matches on `status`; both are stream labels, so it is answered
-  from the index and measures 0.11s against its 1m interval.
+  from the index. Going from 5 `count_over_time` selectors to 17 costs ~6x:
+  measured 0.09s -> 0.54s at a timestamp with data, and 0.07s per Grafana
+  evaluation when the live window is empty. Against a 1m interval that is still
+  about 1% duty cycle.
 
 The rule omits the `host` label entirely rather than hardcoding `APACHE_HOST`,
 which would recreate the `.env` coupling described below for no gain on a
@@ -347,11 +383,43 @@ quiet. To prove the expression still discriminates, evaluate it directly at a ti
 data exists rather than waiting for it to trigger:
 
 ```bash
-# a known scanner campaign -> ~ +27.9pp ; a quiet week -> ~ -0.6pp
+# measured at this timestamp: single-7d -> +27.91pp ; pooled 4-week -> +28.16pp
 curl -sG http://127.0.0.1:3100/loki/api/v1/query \
   --data-urlencode 'time=1786010380000000000' \
   --data-urlencode 'query=<the expr from apache-rules.yaml>' | jq '.data.result'
 ```
+
+The two forms do not have to agree -- a pooled baseline is not the 1-week one --
+and the campaign staying clearly above +15pp is what matters. The probe needs
+**28 days of history before the timestamp**, so check the span first with the
+index stats call above.
+
+**Verify the `or` fallbacks separately, because they are what keeps the blind
+period at 7 days.** At a timestamp where only the `7d` week exists, every older
+term falls back to it and the expression must collapse to *exactly* the single-`7d`
+result -- measured +0.48pp for both at `2026-07-20 10:00 UTC`. The counterfactual
+is the point of the check: the same expression with the `or` clauses removed
+returns an **empty vector** there, which as `noDataState: OK` is a rule that has
+silently stopped alerting.
+
+Sweeping the distribution is a **sampled instant query, not a `query_range`**. The
+17 selectors that cost ~0.5s once cost ~1000x that over a 3-week range at 30m
+steps, and the range query simply does not return:
+
+```bash
+# ~170 probes, ~45s total; a query_range over the same span times out
+for ts in $(seq $(date -u -d '2026-07-16' +%s) 10800 $(date -u -d '2026-08-06' +%s)); do
+  curl -sG http://127.0.0.1:3100/loki/api/v1/query \
+    --data-urlencode 'query=<the expr from apache-rules.yaml>' \
+    --data-urlencode "time=${ts}000000000" \
+    | jq -r '.data.result[0].value[1] // empty'
+done | sort -g | tail -5
+```
+
+Record whatever the quiet-period max turns out to be here and in the comment block
+in `apache-rules.yaml`, and only tighten +15pp if the measurement supports it.
+Filter campaign days out of the sample first, or the top of the distribution is
+just the campaign being detected correctly.
 
 ## Data handling
 
