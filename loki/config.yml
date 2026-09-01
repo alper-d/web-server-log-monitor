@@ -5,36 +5,6 @@ server:
   grpc_listen_port: 9096
   log_level: info
 
-  # These two exist because the 4MB gRPC default turns an over-limit query into
-  # a HANG rather than an error, which is indistinguishable from a broken
-  # dashboard. The internal path is querier -> query frontend: a sharded query's
-  # per-shard result travels back over gRPC, and the "Top 10" panels' inner
-  # `sum by (<high-cardinality field>)` makes that payload scale with distinct
-  # values, not with the 10 rows displayed. At a 24h range on this dataset it is
-  # ~4.9MB, so the frontend answers every shard with
-  #   ResourceExhausted: grpc: received message larger than max (4910813 vs. 4194304)
-  # (logged querier-side as "error notifying frontend about finished query").
-  # Neither the results NOR the accompanying
-  # "maximum of series (100000) reached for a single query" 400 can be
-  # delivered; the frontend retries, no response header is ever written, and
-  # Grafana reports it at the 60s mark as
-  #   net/http: request canceled (Client.Timeout exceeded while awaiting headers)
-  # -- a message that points at neither the series limit nor gRPC.
-  #
-  # Raising these does not make an unbounded topk() affordable (max_query_series
-  # and LOKI_MEM still apply, in that order). It makes the refusal legible.
-  grpc_server_max_recv_msg_size: 104857600
-  grpc_server_max_send_msg_size: 104857600
-
-  # Must exceed limits_config.query_timeout, or a query that hits the timeout
-  # cannot deliver the 504 that says so. At the 30s default a 7d dashboard load
-  # produced 13 panels' worth of "Remote end closed connection without response"
-  # -- the queries were cancelled at query_timeout (60s), by which point the
-  # write deadline had long passed and the connection was simply dropped. Same
-  # class of silent failure as the gRPC ceiling above: the wall is real, the
-  # message explaining it is what goes missing.
-  http_server_write_timeout: 90s
-
 common:
   instance_addr: 127.0.0.1
   path_prefix: /loki
@@ -194,80 +164,6 @@ limits_config:
   # unbounded-cardinality grouping.
   shard_aggregations:
     - approx_topk
-
-querier:
-  # THE dashboard bottleneck, and it does not look like one from the outside.
-  # A dashboard load fires every panel at once -- 14 on apache-traffic-approx --
-  # and each is split into subqueries by limits_config.split_queries_by_interval
-  # (1h), so a 24h range is 24 subqueries per panel and 7d is 168. All of them
-  # funnel through max_concurrent, whose default of 4 is the entire pipe on a
-  # 16-CPU host. The other parallelism knobs promise far more than that default
-  # can deliver (max_query_parallelism 32, tsdb_max_query_parallelism 128); they
-  # are ceilings on how far a query MAY be split, not on how much runs at once.
-  #
-  # Measured on the 24h window, all 14 panels fired concurrently:
-  #   max_concurrent: 4  -> 15.6s wall, 141s exec, 702s queue
-  # Queue time was 5x execution time -- the queries were not slow, they were
-  # waiting. Per-panel exec inflated ~7x under contention versus running the same
-  # query alone ("Total requests": 1.75s alone, 11.0s in the burst).
-  #
-  # 12 on 16 CPUs leaves headroom for the ingester and compactor. Raising this
-  # raises peak memory too -- more subqueries hold results at once -- so it moves
-  # together with LOKI_MEM, not independently of it.
-  max_concurrent: 6
-
-query_range:
-  # Loki caches NOTHING by default: cache_results and
-  # cache_instant_metric_results are both false out of the box (confirmed
-  # against this build via `curl http://127.0.0.1:3100/config`). Every panel
-  # load, and every tick of the dashboard's auto-refresh, re-read the chunks.
-  #
-  # This deployment is the ideal case for a results cache: the data is
-  # historical (fairdomhub spans 2026-07-09..2026-08-06), and
-  # max_cache_freshness_per_query only withholds the most recent 10m, so
-  # essentially every window a user actually looks at is cacheable.
-  cache_results: true
-
-  # Without step alignment the cache almost never hits: two loads of "the same"
-  # range start at different wall-clock instants, so their step boundaries do
-  # not line up and no cached sub-range is reusable. This is what makes
-  # cache_results worth having rather than merely enabled.
-  align_queries_with_step: true
-
-  # cache_results covers query_range only, and 8 of this dashboard's 14 panels
-  # are queryType: instant -- the six stat tiles, the methods pie and the three
-  # approx_topk panels. Without this the cache would miss exactly the panels the
-  # dashboard waits longest on.
-  cache_instant_metric_results: true
-  instant_metric_query_split_align: true
-
-  # The embedded cache is IN-PROCESS: it is charged to the same LOKI_MEM cgroup
-  # ceiling as the ingester's open chunks, and that ceiling is a hard cliff (see
-  # docker-compose.yml). 256MB each was chosen against LOKI_MEM=4g, not against
-  # the old 2g -- do not restore 2g while these are enabled.
-  #
-  # cache_index_stats_results, cache_volume_results, cache_series_results and
-  # cache_label_results are already true by DEFAULT in this version and are
-  # deliberately not repeated here.
-  results_cache:
-    cache:
-      embedded_cache:
-        enabled: true
-        max_size_mb: 256
-  instant_metric_results_cache:
-    cache:
-      embedded_cache:
-        enabled: true
-        max_size_mb: 256
-
-# The querier side of the same querier -> frontend hop guarded in `server`
-# above. Both ends need raising: the frontend's receive ceiling comes from
-# server.grpc_server_max_recv_msg_size, and this is the worker's matching send
-# ceiling. Lift only one and the payload is still rejected, just by the other
-# end.
-frontend_worker:
-  grpc_client_config:
-    max_send_msg_size: 104857600
 
 frontend:
   # Required by limits_config.shard_aggregations above, and the whole reason this
