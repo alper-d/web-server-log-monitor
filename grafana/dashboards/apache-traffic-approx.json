@@ -149,41 +149,6 @@
       ]
     },
     {
-      "id": 2,
-      "type": "stat",
-      "title": "Unique client IPs",
-      "description": "Distinct source addresses seen in the selected range, after filtering.",
-      "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "decimals": 0,
-          "color": { "mode": "fixed", "fixedColor": "purple" },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "colorMode": "value",
-        "graphMode": "none",
-        "textMode": "auto",
-        "justifyMode": "auto"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "apache-loki" },
-          "editorMode": "code",
-          "queryType": "instant",
-          "instant": true,
-          "range": false,
-          "expr": "count(sum by (remote_addr) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range]))) or vector(0)"
-        }
-      ]
-    },
-    {
       "id": 3,
       "type": "stat",
       "title": "Error rate",
@@ -338,72 +303,6 @@
           "instant": true,
           "range": false,
           "expr": "sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\", status=~\"5..\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])) or vector(0)"
-        }
-      ]
-    },
-    {
-      "id": 7,
-      "type": "timeseries",
-      "title": "Requests over time",
-      "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 4 },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "short",
-          "custom": {
-            "drawStyle": "bars",
-            "fillOpacity": 60,
-            "lineWidth": 1,
-            "barAlignment": 0,
-            "showPoints": "never",
-            "spanNulls": false,
-            "axisSoftMin": 0
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "showLegend": false },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "apache-loki" },
-          "editorMode": "code",
-          "queryType": "range",
-          "legendFormat": "requests",
-          "expr": "sum(count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__auto]))"
-        }
-      ]
-    },
-    {
-      "id": 8,
-      "type": "piechart",
-      "title": "HTTP methods",
-      "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 4 },
-      "fieldConfig": {
-        "defaults": { "unit": "short", "mappings": [] },
-        "overrides": []
-      },
-      "options": {
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "pieType": "donut",
-        "displayLabels": ["percent"],
-        "legend": { "displayMode": "list", "placement": "right", "showLegend": true }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": { "type": "loki", "uid": "apache-loki" },
-          "editorMode": "code",
-          "queryType": "instant",
-          "instant": true,
-          "range": false,
-          "legendFormat": "{{method}}",
-          "expr": "sum by (method) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range]))"
         }
       ]
     },
