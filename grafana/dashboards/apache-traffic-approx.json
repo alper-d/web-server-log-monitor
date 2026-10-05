@@ -419,7 +419,7 @@
       "id": 12,
       "type": "table",
       "title": "Top 10 paths",
-      "description": "Query strings are stripped (path_base) to keep the grouping readable.",
+      "description": "Query strings are stripped (path_base) to keep the grouping readable. Requests with no request line (e.g. 408 timeouts logged as \"-\") carry no path and are excluded; otherwise they would take a slot as an unnamed \"Value\" row.",
       "datasource": { "type": "loki", "uid": "apache-loki" },
       "gridPos": { "h": 9, "w": 8, "x": 8, "y": 20 },
       "fieldConfig": {
@@ -450,7 +450,7 @@
           "instant": true,
           "range": false,
           "legendFormat": "{{path_base}}",
-          "expr": "approx_topk(10, sum by (path_base) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])))"
+          "expr": "approx_topk(10, sum by (path_base) (count_over_time({job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | path_base != \"\" | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" [$__range])))"
         }
       ]
     },
