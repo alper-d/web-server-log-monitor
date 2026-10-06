@@ -714,15 +714,20 @@ def verify_range(loki_url: str, log_type: str, host: str, first: datetime, last:
     timestamp falls before schema_config's first `from` date, and the data is
     then unqueryable. Without reading it back, that looks like a clean import.
     Returns the entry count Loki reports, or None if the query failed.
+
+    Asks the index stats API rather than running count_over_time: a metric
+    query over the whole import decompresses every chunk in it (tens of GB on
+    a full history), and Loki drops the connection long before answering. The
+    index answers in seconds, but counts whole chunks -- ones straddling the
+    range edges, and live data in the same streams, add to the total. That is
+    precise enough for the "nothing stored" / "under half stored" checks.
     """
-    span = max(int((last - first).total_seconds()) + 120, 120)
-    query = (f'sum(count_over_time({{job="apache", log_type="{log_type}", '
-             f'host="{host}"}}[{span}s]))')
     params = urllib.parse.urlencode({
-        'query': query,
-        'time': str(to_ns(last + timedelta(seconds=60))),
+        'query': f'{{job="apache", log_type="{log_type}", host="{host}"}}',
+        'start': str(to_ns(first - timedelta(seconds=60))),
+        'end': str(to_ns(last + timedelta(seconds=60))),
     })
-    url = f"{loki_url.rstrip('/')}/loki/api/v1/query?{params}"
+    url = f"{loki_url.rstrip('/')}/loki/api/v1/index/stats?{params}"
     try:
         with urllib.request.urlopen(url, timeout=120) as resp:
             data = json.loads(resp.read().decode('utf-8'))
@@ -734,12 +739,9 @@ def verify_range(loki_url: str, log_type: str, host: str, first: datetime, last:
     except Exception as e:  # noqa: BLE001 - verification must never mask the import
         print(f'  warning: verification query failed: {e}', file=sys.stderr)
         return None
-    result = data.get('data', {}).get('result', [])
-    if not result:
-        return 0
     try:
-        return int(float(result[0]['value'][1]))
-    except (KeyError, IndexError, ValueError):
+        return int(data.get('entries', 0))
+    except (TypeError, ValueError):
         return None
 
 
@@ -1066,11 +1068,13 @@ def main():
             print('  warning: could not force a flush; imported history may take '
                   'a few minutes to become queryable')
         for kind, (first, last, count) in per_kind.items():
-            # Poll: the flush is asynchronous, so give it time to land.
+            # Poll: the flush is asynchronous, so give it time to land. Only an
+            # empty answer is worth retrying; a failed request (None) won't
+            # succeed by asking again.
             found = None
             for _ in range(12):
                 found = verify_range(args.loki_url, kind, args.host, first, last)
-                if found:
+                if found != 0:
                     break
                 time.sleep(5)
             if found is None:
