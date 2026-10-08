@@ -432,12 +432,11 @@
         "footer": { "show": false, "reducer": ["sum"], "fields": "" }
       },
       "transformations": [
-        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } },
         {
           "id": "organize",
           "options": {
-            "renameByName": { "Field": "Path", "Last *": "Requests" },
-            "excludeByName": {}
+            "renameByName": { "path_base": "Path", "Value #A": "Requests" },
+            "excludeByName": { "Time": true }
           }
         }
       ],
@@ -470,12 +469,11 @@
         "footer": { "show": false, "reducer": ["sum"], "fields": "" }
       },
       "transformations": [
-        { "id": "reduce", "options": { "reducers": ["lastNotNull"] } },
         {
           "id": "organize",
           "options": {
-            "renameByName": { "Field": "User agent", "Last *": "Requests" },
-            "excludeByName": {}
+            "renameByName": { "user_agent": "User agent", "Value #A": "Requests" },
+            "excludeByName": { "Time": true }
           }
         }
       ],
