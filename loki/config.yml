@@ -1,4 +1,12 @@
-auth_enabled: false
+# Multi-tenant, so a restricted Grafana org can be pointed at a copy of the
+# data with client IPs hashed (tenant `redacted`) while everything else reads
+# the real one (tenant `fake`). Every request now needs an X-Scope-OrgID
+# header -- Alloy, the importer, both Grafana datasources and any curl.
+#
+# `fake` is not a placeholder: it is the tenant Loki stores everything under
+# while auth_enabled is false, so it is where all pre-multi-tenancy data lives.
+# Limits below (max_streams_per_user, ...) apply per tenant.
+auth_enabled: true
 
 server:
   http_listen_port: 3100

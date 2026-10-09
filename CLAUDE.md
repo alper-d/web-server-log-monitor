@@ -18,6 +18,8 @@ docker compose down             # stop, keep data
 docker compose down -v          # stop and delete ALL ingested logs
 docker compose restart alloy    # after editing alloy/config.alloy
 docker compose restart grafana  # after editing grafana/provisioning/alerting/*.yaml
+./scripts/setup_restricted_org.sh                     # restricted org; RE-RUN after any dashboard edit
+./scripts/add_restricted_user.sh <login> [email]      # account that sees hashed IPs only
 ```
 
 A change to `loki/config.yml` or `alloy/config.alloy` needs a container restart; a change to
@@ -27,7 +29,7 @@ restart. `grafana/dashboards/*.json` is re-read every 30s with no restart.
 Validate an Alloy config before restarting — it fails silently into a crash loop otherwise:
 
 ```bash
-docker run --rm -v "$PWD/alloy/config.alloy:/c.alloy:ro" --entrypoint alloy \
+docker run --rm -e IP_HASH_SALT=x -v "$PWD/alloy/config.alloy:/c.alloy:ro" --entrypoint alloy \
   grafana/alloy:v1.12.0 validate /c.alloy
 ```
 
@@ -38,7 +40,11 @@ Importing rotated archives (`scripts/import_logs.py`, stdlib only, Python 3.9+):
 ./scripts/import_logs.py --log-dir ./backfill --discover --dry-run   # parse + report, push nothing
 ./scripts/import_logs.py --log-dir ./backfill --discover --exclude error.log -v
 ./scripts/import_logs.py --log-dir ./backfill --access-log jjj_access.log   # one family, seconds
+./scripts/import_logs.py --log-dir ./backfill --discover --include-live --tenants redacted
+                                                       # backfill ONLY the hashed copy
 ```
+
+The importer writes both Loki tenants by default (`--tenants full,redacted`).
 
 `--dry-run` on a large archive set takes ~20 min and is the fastest way to prove a parser
 change against real data at full scale. Naming `--access-log` explicitly is what keeps a
@@ -67,7 +73,8 @@ same history.
 `alloy/config.alloy` and `scripts/import_logs.py` implement **the same four regexes and emit
 the same labels and structured metadata**, so live and imported data land in one stream and
 one dashboard query covers both. Change a regex or a label in one and you must change the
-other. The formats, tried in order and decided per line:
+other. The same holds for the three **redaction** regexes and the hash (next section): a
+mismatch hashes one client to two values, live vs imported, silently. The formats, tried in order and decided per line:
 
 | Format | Signature |
 |---|---|
@@ -105,6 +112,56 @@ Two cardinality rules that exist because the internet is hostile:
 - `%v` (which Apache resolved) outranks a filename-derived vhost. `%{Host}i` does **not** — it
   is client input, so trusting it would let a request claim any site. It is stored as
   `vhost_hdr` metadata only.
+
+### Restricted access: a second Loki tenant and a second Grafana org
+
+Some accounts must not see client IPs. Grafana OSS has **no per-panel permissions and no
+per-datasource query permissions** (Enterprise only): anyone who can open a dashboard can POST
+arbitrary LogQL to its datasource via `/api/ds/query`, and every raw log line contains the IP.
+Hiding panels, or putting dashboards in a locked folder, is cosmetic. The boundary that holds
+is that **datasources belong to exactly one org**:
+
+| | Loki tenant (`X-Scope-OrgID`) | Grafana org | datasource uid |
+|---|---|---|---|
+| full | `fake` | 1 (Main) | `apache-loki` (provisioned file) |
+| hashed IPs | `redacted` | 2 (Restricted) | `apache-loki-redacted` (via API) |
+
+`fake` is not a placeholder: it is the tenant Loki stored everything under while
+`auth_enabled` was false, so it holds all pre-multi-tenancy history. Renaming it orphans that.
+`auth_enabled: true` means **every** Loki request needs the header -- a curl without it gets
+`no org id`. Grafana overwrites any client-supplied `X-Scope-OrgID` with the datasource's own
+(verified), so a restricted user cannot forge `fake` through the datasource proxy.
+
+**Redaction is applied to the raw line before parsing**, so the unchanged parser emits
+`remote_addr` / `forwarded_for` / `client` already hashed. Alloy fans one tailer out to two
+instances of `declare "apache_parser"` (the parser exists once), the second behind
+`loki.process "redact"`; the importer's `redact_line()` mirrors it. Hash =
+`sha256(IP_HASH_SALT + ip)`, first 16 hex chars -- Alloy's `Sha2Hash` concatenates salt first.
+Measured parity: 1151 lines across every format, byte-identical between Alloy and Python.
+IPv4 is hashed anywhere in the line; IPv6 only in the `%h` and `[client ...]` positions (none
+occurs elsewhere in the archives). A dotted-quad version string in a User-Agent is hashed too.
+
+`IP_HASH_SALT` must be **secret** (the IPv4 space is brute-forceable given the salt) and
+**never change** (a new salt re-keys every client, splitting history). `setup.sh` generates it
+once and carries it over; Compose refuses to start Alloy without it.
+
+Things that are deliberately not file-provisioned, and why:
+
+- **No dashboard provider with `orgId: 2`.** Grafana 12 treats a provider whose org does not
+  exist as fatal (`failed to get org by ID: 2`) and restart-loops -- on every fresh deploy and
+  after every `docker compose down -v`. `setup_restricted_org.sh` pushes generated copies of
+  `grafana/dashboards/*.json` through the API instead, so **dashboard edits reach org 2 only
+  when that script is re-run**. It fails if a `client IP` title or an `apache-loki` reference
+  survives the rewrite.
+- **The org-2 datasource is created via the API** for the same reason. It is therefore
+  editable by an org-2 Admin, who could point it at `fake` -- so restricted accounts are
+  Viewers only. `add_restricted_user.sh` enforces Viewer, removes every other org membership
+  (Grafana auto-adds new users to org 1, which would defeat all of this) and revokes server
+  admin.
+
+Costs: the redacted copy doubles disk and stream count (limits such as `max_streams_per_user`
+apply per tenant). Live lines Alloy shipped before the redacted branch existed are not
+re-tailed; `--include-live --tenants redacted` fills them.
 
 ### Alerting
 
@@ -284,7 +341,8 @@ Adding a vhost means adding a `path_targets` entry per live log file in `alloy/c
 The importer needs nothing: `--discover` finds archives by name and derives the vhost from it.
 
 The dashboard (`grafana/dashboards/apache-traffic.json`, datasource uid `apache-loki`) carries
-an identical matcher set in all 15 panel expressions. Adding a variable means threading it
+an identical matcher set in all 15 panel expressions. After editing either dashboard, re-run
+`scripts/setup_restricted_org.sh` or the restricted org keeps the old version. Adding a variable means threading it
 into every one; edit the JSON as text rather than round-tripping it through a JSON dumper,
 which reflows the hand-formatting into a several-hundred-line diff.
 
@@ -349,7 +407,7 @@ limit, not data loss. Verify large imports with the index stats API instead, whi
 index rather than scanning chunks:
 
 ```bash
-curl -sG http://127.0.0.1:3100/loki/api/v1/index/stats \
+curl -sG -H 'X-Scope-OrgID: fake' http://127.0.0.1:3100/loki/api/v1/index/stats \
   --data-urlencode 'query={job="apache", log_type="access"}' \
   --data-urlencode "start=$(date -d 2023-01-01 +%s)000000000" \
   --data-urlencode "end=$(date +%s)000000000"
@@ -384,7 +442,7 @@ data exists rather than waiting for it to trigger:
 
 ```bash
 # measured at this timestamp: single-7d -> +27.91pp ; pooled 4-week -> +28.16pp
-curl -sG http://127.0.0.1:3100/loki/api/v1/query \
+curl -sG -H 'X-Scope-OrgID: fake' http://127.0.0.1:3100/loki/api/v1/query \
   --data-urlencode 'time=1786010380000000000' \
   --data-urlencode 'query=<the expr from apache-rules.yaml>' | jq '.data.result'
 ```
@@ -409,7 +467,7 @@ steps, and the range query simply does not return:
 ```bash
 # ~170 probes, ~45s total; a query_range over the same span times out
 for ts in $(seq $(date -u -d '2026-07-16' +%s) 10800 $(date -u -d '2026-08-06' +%s)); do
-  curl -sG http://127.0.0.1:3100/loki/api/v1/query \
+  curl -sG -H 'X-Scope-OrgID: fake' http://127.0.0.1:3100/loki/api/v1/query \
     --data-urlencode 'query=<the expr from apache-rules.yaml>' \
     --data-urlencode "time=${ts}000000000" \
     | jq -r '.data.result[0].value[1] // empty'
@@ -425,5 +483,5 @@ just the campaign being detected correctly.
 
 `./backfill/` holds copies of a production log directory — client IPs, session cookies,
 requested URLs, gigabytes of it. The whole directory is gitignored, as is `import.log`, which
-echoes log lines. `.env` holds the Grafana admin password and is gitignored; `.env.example`
-documents every setting.
+echoes log lines. `.env` holds the Grafana admin password and `IP_HASH_SALT` and is
+gitignored; `.env.example` documents every setting.

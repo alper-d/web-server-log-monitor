@@ -11,3 +11,10 @@ datasources:
     jsonData:
       maxLines: 5000
       timeout: 60
+      # Loki is multi-tenant (loki/config.yml). `fake` is the FULL data, real
+      # client IPs included -- which is why this datasource must only ever
+      # exist in org 1. The restricted org gets its own, reading `redacted`;
+      # see scripts/setup_restricted_org.sh.
+      httpHeaderName1: X-Scope-OrgID
+    secureJsonData:
+      httpHeaderValue1: fake

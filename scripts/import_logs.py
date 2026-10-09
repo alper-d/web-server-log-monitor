@@ -28,6 +28,10 @@ Loki. Lines are parsed into the same labels and structured metadata that
 alloy/config.alloy produces, so imported history is queryable with the same
 dashboard filters as live data.
 
+Each line is written to two Loki tenants: `fake` (as read) and `redacted`
+(every client IP replaced by a salted hash, for the restricted Grafana org).
+`--tenants` picks one; see redact_line().
+
 Re-running is safe: Loki drops entries that are byte-identical in timestamp,
 line and labels within a stream, so a second import of the same archive adds
 nothing rather than doubling counts.
@@ -50,6 +54,7 @@ from __future__ import annotations
 
 import argparse
 import gzip
+import hashlib
 import json
 import os
 import re
@@ -370,6 +375,49 @@ def parse_error_line(line: str, tz):
 
 
 # --------------------------------------------------------------------------
+# Redaction (the `redacted` tenant)
+# --------------------------------------------------------------------------
+# Mirrors loki.process "redact" in alloy/config.alloy, stage for stage. Every
+# client address in the RAW line is replaced by a salted hash BEFORE parsing,
+# so remote_addr / forwarded_for / client come out of the unchanged parsers
+# already hashed, and the line a restricted user sees in the log panel carries
+# no IP either. Apply in this order -- IPv6 first, so an IPv4-mapped address is
+# hashed whole rather than having its IPv4 tail hashed separately.
+#
+# The hash is 16 hex chars: no dots or colons, so the IPv4 pass never re-hashes
+# an IPv6 result, and still within the proxied format's [0-9a-fA-F.:]+ for %h.
+#
+# An IPv6 address outside the two client positions (later XFF hops, free text
+# in an error message) is NOT hashed. None occurs in the archives this was
+# built against; an IPv4 one anywhere in the line is.
+_IPV6 = r'[0-9a-fA-F]*:[0-9a-fA-F.]*:[0-9a-fA-F:.]*'
+REDACT_RES = (
+    # %h, after the optional `vhost:port ` prefix of vhost_combined
+    re.compile(rf'^(?:[^ :",]+(?::[0-9]+)? )?({_IPV6})[ ,]'),
+    # Apache error log: [client 2001:db8::1:51234] -- lazy, so the port stays
+    re.compile(rf'\[client ({_IPV6}?)(?::[0-9]+)?\]'),
+    # Any IPv4, anywhere: %h, every XFF hop, [client a.b.c.d:port], messages
+    re.compile(r'\b((?:[0-9]{1,3}\.){3}[0-9]{1,3})\b', re.ASCII),
+)
+
+
+def hash_ip(ip: str, salt: str) -> str:
+    # Alloy's `{{ .Value | Sha2Hash "salt" | printf "%.16s" }}` is
+    # sha256(salt + value), hex, first 16 chars.
+    return hashlib.sha256((salt + ip).encode('utf-8')).hexdigest()[:16]
+
+
+def redact_line(line: str, salt: str) -> str:
+    def sub(m):
+        whole, start = m.group(0), m.start(0)
+        return (whole[:m.start(1) - start] + hash_ip(m.group(1), salt)
+                + whole[m.end(1) - start:])
+    for regex in REDACT_RES:
+        line = regex.sub(sub, line)
+    return line
+
+
+# --------------------------------------------------------------------------
 # Discovery
 # --------------------------------------------------------------------------
 
@@ -479,6 +527,12 @@ def open_log(path: Path):
 # Pushing
 # --------------------------------------------------------------------------
 
+# Loki tenants (X-Scope-OrgID). `fake` is the name Loki gives the single
+# tenant while auth_enabled is false, which is where all data pushed before
+# multi-tenancy was switched on lives -- renaming it would orphan that history.
+TENANTS = {'full': 'fake', 'redacted': 'redacted'}
+
+
 class LokiPusher:
     # Loki's internal gRPC receive limit is 4 MiB by default, and a push larger
     # than that fails with HTTP 500 "ResourceExhausted: received message larger
@@ -487,9 +541,10 @@ class LokiPusher:
     # hugely (a 5000-entry batch of long URLs reached 4.7 MB).
     DEFAULT_MAX_BYTES = 3_000_000
 
-    def __init__(self, url: str, batch_size: int, dry_run: bool, verbose: bool,
-                 max_bytes: int = DEFAULT_MAX_BYTES):
+    def __init__(self, url: str, tenant: str, batch_size: int, dry_run: bool,
+                 verbose: bool, max_bytes: int = DEFAULT_MAX_BYTES):
         self.url = url.rstrip('/') + '/loki/api/v1/push'
+        self.tenant = tenant
         self.batch_size = batch_size
         self.max_bytes = max_bytes
         self.dry_run = dry_run
@@ -542,7 +597,7 @@ class LokiPusher:
         self.pushed += count
         self.batches += 1
         if self.verbose:
-            print(f'    pushed batch of {count} entries')
+            print(f'    pushed batch of {count} entries to tenant {self.tenant}')
 
     @staticmethod
     def _halve(payload: dict):
@@ -594,6 +649,7 @@ class LokiPusher:
                     'Content-Type': 'application/json',
                     'Content-Encoding': 'gzip',
                     'User-Agent': 'apache-log-importer/1.0',
+                    'X-Scope-OrgID': self.tenant,
                 },
                 method='POST',
             )
@@ -707,7 +763,8 @@ def flush_ingester(loki_url: str) -> bool:
         return False
 
 
-def verify_range(loki_url: str, log_type: str, host: str, first: datetime, last: datetime):
+def verify_range(loki_url: str, tenant: str, log_type: str, host: str,
+                 first: datetime, last: datetime):
     """Query back what Loki actually stored for the imported span.
 
     Worth doing on every run: Loki answers a push with HTTP 204 even when the
@@ -727,9 +784,11 @@ def verify_range(loki_url: str, log_type: str, host: str, first: datetime, last:
         'start': str(to_ns(first - timedelta(seconds=60))),
         'end': str(to_ns(last + timedelta(seconds=60))),
     })
-    url = f"{loki_url.rstrip('/')}/loki/api/v1/index/stats?{params}"
+    req = urllib.request.Request(
+        f"{loki_url.rstrip('/')}/loki/api/v1/index/stats?{params}",
+        headers={'X-Scope-OrgID': tenant})
     try:
-        with urllib.request.urlopen(url, timeout=120) as resp:
+        with urllib.request.urlopen(req, timeout=120) as resp:
             data = json.loads(resp.read().decode('utf-8'))
     except urllib.error.HTTPError as e:
         detail = e.read().decode('utf-8', 'replace').strip()
@@ -749,9 +808,15 @@ def verify_range(loki_url: str, log_type: str, host: str, first: datetime, last:
 # Main
 # --------------------------------------------------------------------------
 
-def process_file(path: Path, kind: str, base_labels: dict, tz, pusher: LokiPusher,
+def process_file(path: Path, kind: str, base_labels: dict, tz, sinks: list,
                  since, until, verbose: bool) -> dict:
-    """Parse one archive and hand its entries to the pusher."""
+    """Parse one archive and hand its entries to each sink's pusher.
+
+    `sinks` is a list of (LokiPusher, salt): salt None ships the line as read,
+    a salt ships redact_line() of it. The redacted line is parsed in its own
+    right, exactly as Alloy's redacted branch does, so its metadata is hashed
+    without the parsers knowing anything about redaction.
+    """
     stats = {'lines': 0, 'imported': 0, 'unparsed': 0, 'skipped_range': 0,
              'first': None, 'last': None}
 
@@ -789,10 +854,15 @@ def process_file(path: Path, kind: str, base_labels: dict, tz, pusher: LokiPushe
                 continue
             stats['lines'] += 1
 
-            if kind == 'access':
-                dt, extra, meta = parse_access_line(line)
-            else:
-                dt, extra, meta = parse_error_line(line, tz)
+            parsed = []
+            for pusher, salt in sinks:
+                out = redact_line(line, salt) if salt else line
+                if kind == 'access':
+                    parsed.append((pusher, out) + parse_access_line(out))
+                else:
+                    parsed.append((pusher, out) + parse_error_line(out, tz))
+            # Redaction never touches a timestamp, so every sink agrees on it.
+            dt = parsed[0][2]
 
             if dt is None:
                 stats['unparsed'] += 1
@@ -812,8 +882,9 @@ def process_file(path: Path, kind: str, base_labels: dict, tz, pusher: LokiPushe
             if stats['last'] is None or dt > stats['last']:
                 stats['last'] = dt
 
-            meta['archive'] = path.name
-            pusher.add({**labels, **extra}, to_ns(dt), line, meta)
+            for pusher, out, _, extra, meta in parsed:
+                meta['archive'] = path.name
+                pusher.add({**labels, **extra}, to_ns(dt), out, meta)
             stats['imported'] += 1
 
             # Multi-million-line archives exist; don't go silent for minutes.
@@ -875,10 +946,28 @@ def main():
                    default=LokiPusher.DEFAULT_MAX_BYTES,
                    help='flush a batch once it reaches this many bytes, to stay '
                         "under Loki's 4 MiB gRPC limit (default: %(default)s)")
+    p.add_argument('--tenants', default='full,redacted', metavar='LIST',
+                   help='comma-separated Loki tenants to write: `full` (real '
+                        'client IPs) and/or `redacted` (IPs replaced by a hash '
+                        'salted with IP_HASH_SALT from .env). History imported '
+                        'before the redacted tenant existed needs one '
+                        '`--tenants redacted` run (default: %(default)s)')
     p.add_argument('--no-verify', action='store_true',
                    help='skip reading the data back from Loki after importing')
     p.add_argument('-v', '--verbose', action='store_true', help='per-batch detail')
     args = p.parse_args()
+
+    tenants = [t.strip() for t in args.tenants.split(',') if t.strip()]
+    unknown = set(tenants) - set(TENANTS)
+    if unknown or not tenants:
+        die(f'--tenants takes {" and/or ".join(TENANTS)}, got {args.tenants!r}')
+    salt = os.getenv('IP_HASH_SALT') or env.get('IP_HASH_SALT', '')
+    # Alphanumeric only: Alloy splices the same value into a template string,
+    # where a quote would break the config. Long, because an unsalted (or
+    # guessable) hash of a 32-bit IPv4 space is reversed by brute force.
+    if 'redacted' in tenants and not re.fullmatch(r'[0-9A-Za-z]{16,}', salt):
+        die('the redacted tenant needs IP_HASH_SALT in .env (16+ alphanumeric '
+            'characters, generated by scripts/setup.sh)')
 
     log_dir = Path(args.log_dir).expanduser()
     if not log_dir.is_dir():
@@ -970,11 +1059,16 @@ def main():
     except ValueError as e:
         die(f'bad date: {e}')
 
-    pusher = LokiPusher(args.loki_url, args.batch_size, args.dry_run, args.verbose,
-                        max_bytes=args.max_batch_bytes)
+    # Full first: process_file() takes the timestamp from the first sink.
+    sinks = [(LokiPusher(args.loki_url, TENANTS[t], args.batch_size, args.dry_run,
+                         args.verbose, max_bytes=args.max_batch_bytes),
+              salt if t == 'redacted' else None)
+             for t in TENANTS if t in tenants]
+    pushers = [pusher for pusher, _ in sinks]
 
     print(f'Importing from {log_dir}')
     print(f'  target      {args.loki_url}' + ('  (DRY RUN, nothing sent)' if args.dry_run else ''))
+    print(f'  tenants     {", ".join(p.tenant for p in pushers)}')
     print(f'  host label  {args.host}')
     print(f'  error tz    {args.tz}')
     print()
@@ -994,7 +1088,7 @@ def main():
         base_labels = {'job': 'apache', 'host': args.host, 'log_type': kind,
                        'vhost': vhost}
         for f in files:
-            st = process_file(f, kind, base_labels, tz, pusher, since, until, args.verbose)
+            st = process_file(f, kind, base_labels, tz, sinks, since, until, args.verbose)
             if st.get('unreadable'):
                 totals['unreadable'] += 1
                 continue
@@ -1027,13 +1121,16 @@ def main():
             else:
                 per_kind[kind] = [kind_first, kind_last, kind_count]
 
-    pusher.flush()
+    for pusher in pushers:
+        pusher.flush()
 
     print()
     print(f"Files read        {totals['files']}"
           + (f" ({totals['unreadable']} unreadable)" if totals['unreadable'] else ''))
     print(f"Lines read        {human(totals['lines'])}")
-    print(f"Entries imported  {human(pusher.pushed)} in {pusher.batches} batch(es)")
+    for pusher in pushers:
+        print(f"Entries imported  {human(pusher.pushed)} in {pusher.batches} batch(es)"
+              f" -> tenant {pusher.tenant}")
     if totals['unparsed']:
         print(f"Unparsed lines    {human(totals['unparsed'])} "
               f"(stored verbatim, timestamp inherited from the previous line)")
@@ -1042,12 +1139,15 @@ def main():
     if span_first and span_last:
         print(f"Time span         {span_first.isoformat()}  ->  {span_last.isoformat()}")
 
-    if pusher.throttled:
-        print(f"Rate limited      {pusher.throttled} time(s), retried with backoff")
-    if pusher.split:
-        print(f"Batches split     {pusher.split} (exceeded Loki's message size limit)")
-    if pusher.rejected_ooo:
-        print(f"Dropped by Loki   {human(pusher.rejected_ooo)} entries outside its "
+    throttled = sum(p.throttled for p in pushers)
+    split = sum(p.split for p in pushers)
+    rejected_ooo = sum(p.rejected_ooo for p in pushers)
+    if throttled:
+        print(f"Rate limited      {throttled} time(s), retried with backoff")
+    if split:
+        print(f"Batches split     {split} (exceeded Loki's message size limit)")
+    if rejected_ooo:
+        print(f"Dropped by Loki   {human(rejected_ooo)} entries outside its "
               f"out-of-order window\n"
               f"                  (raise ingester.max_chunk_age in loki/config.yml "
               f"to widen it)")
@@ -1056,7 +1156,7 @@ def main():
         print('\nDry run: nothing was sent to Loki.')
         return
 
-    if not pusher.pushed:
+    if not any(p.pushed for p in pushers):
         return
 
     ok = True
@@ -1067,29 +1167,32 @@ def main():
         else:
             print('  warning: could not force a flush; imported history may take '
                   'a few minutes to become queryable')
-        for kind, (first, last, count) in per_kind.items():
+        for (kind, (first, last, count)), pusher in (
+                (k, p) for k in per_kind.items() for p in pushers):
+            tag = f'{kind}/{pusher.tenant}'
             # Poll: the flush is asynchronous, so give it time to land. Only an
             # empty answer is worth retrying; a failed request (None) won't
             # succeed by asking again.
             found = None
             for _ in range(12):
-                found = verify_range(args.loki_url, kind, args.host, first, last)
+                found = verify_range(args.loki_url, pusher.tenant, kind, args.host,
+                                     first, last)
                 if found != 0:
                     break
                 time.sleep(5)
             if found is None:
-                print(f'  {kind:<8} could not verify')
+                print(f'  {tag:<18} could not verify')
                 continue
             if found == 0 and count > 0:
                 ok = False
-                print(f'  {kind:<8} 0 of {human(count)} entries found -- NOT STORED')
+                print(f'  {tag:<18} 0 of {human(count)} entries found -- NOT STORED')
             elif found < count * 0.5:
                 ok = False
-                print(f'  {kind:<8} only {human(found)} of {human(count)} entries found')
+                print(f'  {tag:<18} only {human(found)} of {human(count)} entries found')
             else:
                 # Exact equality isn't expected: Loki drops byte-identical lines
                 # that share a one-second Apache timestamp.
-                print(f'  {kind:<8} {human(found)} entries queryable '
+                print(f'  {tag:<18} {human(found)} entries queryable '
                       f'(pushed {human(count)}; identical same-second lines dedup)')
 
     if not ok:

@@ -37,6 +37,13 @@ services:
       - /etc/alloy/config.alloy
       - --storage.path=/var/lib/alloy/data
       - --server.http.listen-addr=0.0.0.0:12345
+    environment:
+      # Salt for the IP hashes in the `redacted` Loki tenant (loki.process
+      # "redact" in config.alloy). Required, not defaulted: an empty salt makes
+      # every hash a plain sha256 of an IPv4 address, which is reversed by
+      # brute force in minutes. scripts/import_logs.py reads the same key, and
+      # the two must agree or one client gets two different hashes.
+      IP_HASH_SALT: ${IP_HASH_SALT:?IP_HASH_SALT is not set -- run scripts/setup.sh}
     ports:
       # Alloy's own UI: component graph + live debugging of parse stages
       - "127.0.0.1:12345:12345"

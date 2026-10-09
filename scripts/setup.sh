@@ -139,6 +139,23 @@ else
   say "alerting" "not configured (set SMTP_* and ALERT_EMAIL_TO in .env to enable email)"
 fi
 
+# --- IP hash salt ---------------------------------------------------------
+# Salts the client-IP hashes in the `redacted` Loki tenant. Carried over, never
+# regenerated: a new salt gives every client a new hash, so the redacted copy
+# would split each client in two at the moment it changed. Hex only, because
+# alloy/config.alloy splices it into a template string.
+IP_HASH_SALT="$(carry_over IP_HASH_SALT)"
+if [[ -n "$IP_HASH_SALT" ]]; then
+  say "ip hash salt" "carried over from existing .env"
+else
+  if command -v openssl >/dev/null 2>&1; then
+    IP_HASH_SALT="$(openssl rand -hex 16)"
+  else
+    IP_HASH_SALT="$(tr -dc 'a-f0-9' < /dev/urandom | head -c 32)"
+  fi
+  say "ip hash salt" "generated"
+fi
+
 # --- write ----------------------------------------------------------------
 # Ports are written as literals: Docker Compose interpolates ${VAR} inside the
 # compose file, not inside .env, so .env must not reference its own variables.
@@ -184,6 +201,10 @@ SMTP_USER=$SMTP_USER
 SMTP_PASSWORD=$SMTP_PASSWORD
 SMTP_FROM_ADDRESS=$SMTP_FROM_ADDRESS
 SMTP_FROM_NAME=$SMTP_FROM_NAME
+
+# Salt for the hashed client IPs the restricted Grafana org sees. Keep it
+# secret and never change it -- see .env.example.
+IP_HASH_SALT=$IP_HASH_SALT
 EOF
 chmod 600 "$ENV_FILE"
 
