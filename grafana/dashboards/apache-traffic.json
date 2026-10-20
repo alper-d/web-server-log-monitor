@@ -481,12 +481,65 @@
       ]
     },
     {
+      "id": 16,
+      "type": "timeseries",
+      "title": "Response time",
+      "description": "Apache's %D: from request received to the last byte sent, so a slow client inflates it. Quantiles are pooled across every selected vhost. Empty for any period or vhost whose LogFormat did not log %D -- the archives never did.",
+      "datasource": { "type": "loki", "uid": "apache-loki" },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 20 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "µs",
+          "custom": {
+            "drawStyle": "line",
+            "fillOpacity": 10,
+            "lineWidth": 2,
+            "showPoints": "auto",
+            "spanNulls": false,
+            "axisSoftMin": 0
+          },
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "legendFormat": "p50",
+          "expr": "quantile_over_time(0.50, {job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" | duration_us =~ \"[0-9]+\" | unwrap duration_us [$__auto]) by ()"
+        },
+        {
+          "refId": "B",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "legendFormat": "p95",
+          "expr": "quantile_over_time(0.95, {job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" | duration_us =~ \"[0-9]+\" | unwrap duration_us [$__auto]) by ()"
+        },
+        {
+          "refId": "C",
+          "datasource": { "type": "loki", "uid": "apache-loki" },
+          "editorMode": "code",
+          "queryType": "range",
+          "legendFormat": "p99",
+          "expr": "quantile_over_time(0.99, {job=\"apache\", log_type=\"access\", host=\"$host\", vhost=~\"${vhost:regex}\", method=~\"${method:regex}\", status=~\"${status:regex}\"} | remote_addr =~ \"$ip\" | path =~ \"$path\" | user_agent =~ \"$ua\" | duration_us =~ \"[0-9]+\" | unwrap duration_us [$__auto]) by ()"
+        }
+      ]
+    },
+    {
       "id": 11,
       "type": "piechart",
       "title": "Top 10 client IPs",
       "description": "Slices are the top 10 IPs only, so they do not sum to total traffic -- percentages are shares of these 10, not of all requests.",
       "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 20 },
+      "gridPos": { "h": 9, "w": 8, "x": 0, "y": 28 },
       "fieldConfig": {
         "defaults": {
           "unit": "short",
@@ -522,7 +575,7 @@
       "title": "Top 10 paths",
       "description": "Query strings are stripped (path_base) to keep the grouping readable.",
       "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 20 },
+      "gridPos": { "h": 9, "w": 8, "x": 8, "y": 28 },
       "fieldConfig": {
         "defaults": { "unit": "short", "decimals": 0, "mappings": [] },
         "overrides": []
@@ -560,7 +613,7 @@
       "type": "table",
       "title": "Top 10 user agents",
       "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 20 },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 28 },
       "fieldConfig": {
         "defaults": { "unit": "short", "decimals": 0, "mappings": [] },
         "overrides": []
@@ -599,7 +652,7 @@
       "title": "Requests",
       "description": "Raw access log lines matching the filters. Expand a line to see the parsed fields (client IP, path, user agent, bytes) as structured metadata.",
       "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 29 },
+      "gridPos": { "h": 12, "w": 24, "x": 0, "y": 37 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": {
         "showTime": true,
@@ -628,7 +681,7 @@
       "title": "Apache error log",
       "description": "Not affected by the access-log filters above, apart from Host and the time range.",
       "datasource": { "type": "loki", "uid": "apache-loki" },
-      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 41 },
+      "gridPos": { "h": 10, "w": 24, "x": 0, "y": 49 },
       "fieldConfig": { "defaults": {}, "overrides": [] },
       "options": {
         "showTime": true,

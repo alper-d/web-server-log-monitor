@@ -17,8 +17,8 @@ Four log formats are recognised, tried in order and detected per line, because
 one directory routinely mixes them:
 
     combined [+ %D %{Host}i] [+ any number of trailing "..." fields]
-    vhost_combined              a %v:%p prefix (other_vhosts_access.log)
-    proxied                     %h holds an X-Forwarded-For chain, UA comes first
+    vhost_combined [+ %D %{Host}i]   a %v:%p prefix (other_vhosts_access.log)
+    proxied [+ %D]              %h holds an X-Forwarded-For chain, UA comes first
     Apache / Phusion Passenger  interleaved in one error log, split per line
                                 onto log_type="error" and log_type="passenger"
 
@@ -125,7 +125,7 @@ VHOST_ACCESS_RE = re.compile(
 # A vhost fronted by a reverse proxy (fairdomhub-55555-access.log). Its
 # LogFormat drops %l %u entirely, puts a client chain in %h, and -- unlike
 # combined -- leads with the User-Agent rather than the Referer:
-#   %h %t "%r" %>s %O "%{User-Agent}i" "%{Accept}i" "%{Host}i" "%{Referer}i" "%{Accept-Encoding}i"
+#   %h %t "%r" %>s %O "%{User-Agent}i" "%{Accept}i" "%{Host}i" "%{Referer}i" "%{Accept-Encoding}i" [%D]
 #   66.249.76.228, 172.18.0.1 [12/Aug/2025:13:44:05 +0000] "GET /s/26227 HTTP/1.1" 500 4393 "Mozilla/5.0 ..." "text/html..." "fairdomhub.org" "-" "gzip"
 # Tried last, and safely so: both regexes above require the literal `%l %u`
 # fields between the address and the "[timestamp", which this format has not
@@ -139,7 +139,8 @@ PROXIED_ACCESS_RE = re.compile(
     rf'(?: "(?P<accept>{_QF})")?'
     rf'(?: "(?P<vhost_hdr>{_QF})")?'
     rf'(?: "(?P<referer>{_QF})")?'
-    rf'(?: "(?P<accept_encoding>{_QF})")?\s*$'
+    rf'(?: "(?P<accept_encoding>{_QF})")?'
+    rf'(?: (?P<duration_us>\d+))?\s*$'
 )
 
 ACCESS_FORMATS = (ACCESS_RE, VHOST_ACCESS_RE, PROXIED_ACCESS_RE)
@@ -311,8 +312,9 @@ def parse_access_line(line: str):
         if g.get(key):
             meta[key] = g[key]
 
-    # Format-dependent extras: `duration_us`/`vhost_hdr` come from the extended
-    # LogFormat (%D %{Host}i), the rest only from the proxied one. Absent groups
+    # Format-dependent extras: `duration_us` comes from %D (after the UA with
+    # %{Host}i in combined/vhost_combined, last in proxied), the rest only from
+    # the proxied format. Absent groups
     # are skipped rather than stored empty, which keeps Grafana's log-details
     # pane free of blank rows on the formats that don't carry them.
     for key in ('duration_us', 'vhost_hdr', 'forwarded_for',

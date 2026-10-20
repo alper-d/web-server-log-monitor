@@ -78,15 +78,23 @@ mismatch hashes one client to two values, live vs imported, silently. The format
 
 | Format | Signature |
 |---|---|
-| `combined` | `%h %l %u %t "%r" %>s %O "%{Referer}i" "%{User-Agent}i"`, plus any number of trailing `"..."` fields |
-| `vhost_combined` | a `%v:%p` prefix (`other_vhosts_access.log`) |
-| proxied | no `%l %u`, XFF chain in `%h`, User-Agent *before* Referer |
+| `combined` | `%h %l %u %t "%r" %>s %O "%{Referer}i" "%{User-Agent}i"`, optional `%D %{Host}i`, plus any number of trailing `"..."` fields |
+| `vhost_combined` | a `%v:%p` prefix (`other_vhosts_access.log`), same optional `%D %{Host}i` |
+| proxied | no `%l %u`, XFF chain in `%h`, User-Agent *before* Referer, optional trailing `%D` |
 | Apache / Phusion Passenger | interleaved in one error log, split per line |
 
 The trailing-quoted-fields tail on `combined` is load-bearing: sites extend the format freely
 (a session cookie, an `Accept` header), and a regex ending at the User-Agent rejects every
 such line outright rather than degrading — which is how one 57M-line vhost silently
 contributed nothing.
+
+`duration_us` (`%D`) is shipped by Alloy **only when the line carries it**. An unmatched
+regex group is still extracted as `""`, and both Alloy and Loki store that empty string, so
+shipping it unconditionally would put a blank row on every line from a LogFormat without
+`%D`. Alloy promotes it to a temporary `duration_us` label, gates the metadata stage on
+`{duration_us=~".+"}`, and drops the label with `log_format`. The importer simply skips
+empty groups. Dashboard quantiles over it need `by ()`: without a grouping,
+`quantile_over_time` returns one series per stream (method x status).
 
 Passenger/Apache classification is **per line, not per file**: a server-wide `error.log`
 interleaves them in wildly varying ratios, so the file name proves nothing. Passenger lines
@@ -341,7 +349,7 @@ Adding a vhost means adding a `path_targets` entry per live log file in `alloy/c
 The importer needs nothing: `--discover` finds archives by name and derives the vhost from it.
 
 The dashboard (`grafana/dashboards/apache-traffic.json`, datasource uid `apache-loki`) carries
-an identical matcher set in all 15 panel expressions. After editing either dashboard, re-run
+an identical matcher set in every panel expression. After editing either dashboard, re-run
 `scripts/setup_restricted_org.sh` or the restricted org keeps the old version. Adding a variable means threading it
 into every one; edit the JSON as text rather than round-tripping it through a JSON dumper,
 which reflows the hand-formatting into a several-hundred-line diff.
